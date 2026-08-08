@@ -285,9 +285,11 @@
       els.revealPoints.textContent = pts > 0
         ? "+" + pts + (pts === window.Rules.maxPoints(s.profileId) ? " — bullseye!" : " points")
         : "No points this round";
-      els.revealDetail.textContent = pts > 0
+      var off = (s.target != null && s.guess != null)
+        ? Math.round(Math.abs(s.guess - s.target)) : null;
+      els.revealDetail.textContent = (pts > 0 || off === null)
         ? "Running total: " + s.total + "."
-        : "The target was just outside the guess. Running total: " + s.total + ".";
+        : "Off by " + off + "° of the dial. Running total: " + s.total + ".";
       els.nextBtn.textContent = s.round >= s.rounds ? "See final score" : "Next round";
     }
   }
