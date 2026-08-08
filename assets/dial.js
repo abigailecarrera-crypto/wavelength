@@ -142,10 +142,13 @@
     function down(e) {
       if (!self.interactive) return;
       e.preventDefault();
-      self.svg.setPointerCapture(e.pointerId);
       self._dragging = true;
+      /* Move the needle first: capture is an optimisation for tracking the
+         pointer outside the element, and some browsers throw on it. A failure
+         there must not swallow the tap. */
       self.setValue(valueFromEvent(e));
       if (self.onInput) self.onInput(self.value);
+      try { self.svg.setPointerCapture(e.pointerId); } catch (_) {}
     }
     function move(e) {
       if (!self.interactive || !self._dragging) return;
