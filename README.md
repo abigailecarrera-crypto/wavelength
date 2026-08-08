@@ -32,23 +32,48 @@ as on the physical board.
 
 ## How the connection works
 
-GitHub Pages serves static files only, so there is no game server. The two
-browsers talk directly over a **WebRTC data channel**:
+GitHub Pages serves static files only, so there is no game server. Both
+browsers make **outbound WebSocket connections** to public MQTT relays and
+exchange messages on a shared topic.
 
-- The host's browser registers a random six-character room code with a public
-  PeerJS broker. The broker's only job is to introduce the two peers.
-- Once introduced, all game traffic — cards, clues, guesses, the target position —
-  flows **directly between the two browsers**, encrypted with DTLS as WebRTC
-  requires. It never reaches the broker or any server we run.
-- The host's browser is authoritative for game state. Snapshots sent to the
-  guesser have the target position **stripped out** until the reveal, so the
-  answer isn't sitting in the other client's memory.
-- The page is served over HTTPS, sets a restrictive Content-Security-Policy,
-  and stores nothing — no cookies, no accounts, no analytics.
+**Why not peer-to-peer?** The first version used WebRTC, and it failed to
+connect for real players on different networks. WebRTC needs a TURN relay
+whenever either side is behind a symmetric NAT or a strict firewall — common on
+home routers, office wifi and mobile data — and every free public TURN server
+has now shut down (verified: they no longer resolve). Outbound WSS works from
+essentially any network, so this connects where WebRTC silently would not.
+
+Routing through someone else's relay would normally mean handing them your
+game, so:
+
+- The **topic name is a SHA-256 hash** of the room code, not the code itself —
+  watching the relay doesn't reveal live codes to walk into.
+- Every payload is **AES-256-GCM encrypted** under a key derived from the room
+  code with PBKDF2 (120k iterations). A relay sees an opaque topic carrying
+  opaque bytes, and undecryptable traffic is simply ignored.
+- The host's browser stays authoritative for game state, and snapshots sent to
+  the guesser have the target position **stripped out** until the reveal.
+- The page is served over HTTPS with a restrictive Content-Security-Policy, and
+  stores nothing — no cookies, no accounts, no analytics.
+
+Public relays drop messages under load, so the transport adds its own
+reliability on top of MQTT QoS 0: game messages are sequenced, retransmitted
+until acknowledged, delivered in order, and de-duplicated. Each client connects
+to **all three relays at once**, so the two players only need one relay in
+common — which removes the "each side failed over to a different server" trap.
+Game traffic then rides a single relay known to reach the partner, with retries
+fanning out to all of them.
 
 Room codes are drawn from a 31-character alphabet (no look-alike characters),
 giving about 900 million combinations. A room only accepts one guest; a third
 connection is turned away.
+
+### Trade-off, stated plainly
+
+A relay can see *that* two anonymous clients are exchanging traffic, and how
+much. It cannot read the contents. That is a real change from the WebRTC
+version, which leaked nothing to any middleman but frequently refused to
+connect at all. Reliability won.
 
 ## Running locally
 
@@ -63,15 +88,24 @@ Then open `http://localhost:8000` in two tabs or on two devices.
 ## Layout
 
 ```
-index.html            markup and CSP
-assets/styles.css     dark theme
-assets/spectrums.js   the card deck
-assets/game.js        pure rules: scoring, bands, shuffle
-assets/dial.js        SVG dial, screen animation, drag + keyboard input
-assets/net.js         PeerJS host/join, reconnect, error mapping
-assets/app.js         screens, host-authoritative state, message handling
-vendor/peerjs.min.js  vendored so no third-party script loads at runtime
+index.html               markup and CSP
+assets/styles.css        dark theme
+assets/spectrums.js      the card deck
+assets/game.js           pure rules: scoring, bands, shuffle
+assets/dial.js           SVG dial, screen animation, drag + keyboard input
+assets/mqtt.js           minimal MQTT 3.1.1 over WebSocket (no dependencies)
+assets/net.js            rooms, encryption, ordering, retransmission
+assets/app.js            screens, host-authoritative state, message handling
+test/relay-test.html     open in a browser; runs unit + live relay tests
 ```
+
+## Tests
+
+Open `test/relay-test.html` (served over http, not `file://`). It checks the
+MQTT varint and string encoding, then stands up a real host and guest against
+the live relays and asserts that 40 rapid messages all arrive **in order**, that
+a 30 KB payload survives packet fragmentation, that unicode round-trips, and
+that a wrong room code cannot join.
 
 ## Accessibility
 

@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wavelength relay tests</title>
+<style>
+  body { font: 14px ui-monospace, Menlo, monospace; background: #0d1119; color: #e8edf6; padding: 1.5rem; }
+  .pass { color: #8ce0a8; } .fail { color: #ff8b8b; } .info { color: #9aa7bf; }
+  h1 { font-size: 1.1rem; }
+  pre { white-space: pre-wrap; line-height: 1.6; }
+</style>
+</head>
+<body>
+<h1>Wavelength relay tests</h1>
+<pre id="out">running…</pre>
+
+<script src="../assets/mqtt.js"></script>
+<script src="../assets/net.js"></script>
+<script>
+var lines = [], failures = 0;
+function log(msg, cls) {
+  lines.push('<span class="' + (cls || 'info') + '">' + msg + '</span>');
+  document.getElementById('out').innerHTML = lines.join('\n');
+}
+function check(name, ok, detail) {
+  if (!ok) failures++;
+  log((ok ? 'PASS  ' : 'FAIL  ') + name + (detail ? '   ' + detail : ''), ok ? 'pass' : 'fail');
+}
+
+/* ── 1. Varint round-trip ─────────────────────────── */
+function testVarint() {
+  var I = window.MqttClient._internals;
+  var sizes = [0, 1, 127, 128, 129, 16383, 16384, 2097151, 2097152, 268435455];
+  var allOk = true, bad = [];
+  sizes.forEach(function (n) {
+    var enc = I.encodeLength(n);
+    /* Prefix a fake fixed-header byte, since decode starts at offset 1. */
+    var buf = new Uint8Array(1 + enc.length);
+    buf.set(enc, 1);
+    var dec = I.decodeLength(buf, 1);
+    if (!dec || dec.value !== n || dec.bytes !== enc.length) {
+      allOk = false;
+      bad.push(n + '->' + (dec ? dec.value : 'null'));
+    }
+  });
+  check('varint round-trip (10 sizes incl. 4-byte)', allOk, bad.join(','));
+
+  var partial = window.MqttClient._internals.decodeLength(new Uint8Array([0x30, 0x80]), 1);
+  check('varint returns null on incomplete input', partial === null);
+}
+
+/* ── 2. String encoding ───────────────────────────── */
+function testString() {
+  var I = window.MqttClient._internals;
+  var e = I.encodeString('wvln/abc');
+  check('string length prefix', e[0] === 0 && e[1] === 8 && e.length === 10);
+  var uni = I.encodeString('héllo');           // 6 UTF-8 bytes, 5 chars
+  check('string prefix counts bytes not chars', uni[1] === 6, 'got ' + uni[1]);
+}
+
+/* ── 3. Live host/guest handshake and messaging ───── */
+function testLiveRoom() {
+  return new Promise(function (resolve) {
+    var hostNet, guestNet, code = null;
+    var received = [], guestGot = [];
+    var t0 = Date.now();
+    var settled = false;
+
+    var giveUp = setTimeout(function () {
+      if (settled) return;
+      settled = true;
+      check('live room handshake', false, 'timed out after 40s');
+      cleanup(); resolve();
+    }, 40000);
+
+    function cleanup() {
+      clearTimeout(giveUp);
+      try { hostNet && hostNet.close(); } catch (_) {}
+      try { guestNet && guestNet.close(); } catch (_) {}
+    }
+
+    hostNet = new window.Net({
+      onStatus: function (t, k) { if (k === 'warn') log('  host status: ' + t); },
+      onReady: function (c) {
+        code = c;
+        log('  room code: ' + code + '  (' + (Date.now() - t0) + 'ms to open)');
+        guestNet = new window.Net({
+          onStatus: function (t, k) { if (k === 'warn') log('  guest status: ' + t); },
+          onConnected: function () {
+            check('guest connected to host', true, (Date.now() - t0) + 'ms total');
+            runExchange();
+          },
+          onData: function (m) { guestGot.push(m); },
+          onFatal: function (t) {
+            if (settled) return;
+            settled = true;
+            check('guest connected to host', false, 'fatal: ' + t);
+            cleanup(); resolve();
+          }
+        });
+        guestNet.join(code);
+      },
+      onConnected: function () { log('  host sees partner'); },
+      onData: function (m) { received.push(m); },
+      onFatal: function (t) {
+        if (settled) return;
+        settled = true;
+        check('host opened room', false, 'fatal: ' + t);
+        cleanup(); resolve();
+      }
+    });
+    hostNet.host();
+
+    function runExchange() {
+      /* Ordering + integrity: 40 sequential messages host -> guest. */
+      for (var i = 0; i < 40; i++) hostNet.send({ n: i });
+      /* A payload well past the 127-byte single-byte varint boundary. */
+      var big = new Array(30000).join('x');
+      hostNet.send({ big: big, len: big.length });
+      guestNet.send({ hello: 'from guest', unicode: 'héllo ✨' });
+
+      setTimeout(function () {
+        if (settled) return;
+        settled = true;
+
+        var nums = guestGot.filter(function (m) { return typeof m.n === 'number'; }).map(function (m) { return m.n; });
+        check('all 40 messages delivered', nums.length === 40, 'got ' + nums.length);
+        log('  arrival order: ' + nums.join(','));
+
+        var ordered = nums.every(function (v, i) { return v === i; });
+        check('messages arrive in order', ordered, ordered ? '' : nums.slice(0, 12).join(','));
+
+        var bigMsg = guestGot.filter(function (m) { return m.big; })[0];
+        check('30KB payload survives (multi-byte varint + fragmentation)',
+          !!bigMsg && bigMsg.big.length === bigMsg.len && bigMsg.len === 29999,
+          bigMsg ? 'len ' + bigMsg.big.length : 'missing');
+
+        var back = received.filter(function (m) { return m.hello; })[0];
+        check('guest -> host direction works', !!back && back.hello === 'from guest');
+        check('unicode survives round-trip', !!back && back.unicode === 'héllo ✨',
+          back ? JSON.stringify(back.unicode) : '');
+
+        check('isConnected() true on both sides',
+          hostNet.isConnected() && guestNet.isConnected());
+
+        cleanup();
+        resolve();
+      }, 14000);
+    }
+  });
+}
+
+/* ── 4. Wrong code must not connect ───────────────── */
+function testWrongCode() {
+  return new Promise(function (resolve) {
+    var hostNet, guestNet, settled = false;
+    hostNet = new window.Net({
+      onReady: function (c) {
+        /* Deliberately mangle the code so key + topic both differ. */
+        var wrong = c === 'AAAAAA' ? 'BBBBBB' : 'AAAAAA';
+        guestNet = new window.Net({
+          onConnected: function () {
+            if (settled) return;
+            settled = true;
+            check('wrong code cannot join', false, 'it connected!');
+            done();
+          },
+          onFatal: function () {
+            if (settled) return;
+            settled = true;
+            check('wrong code cannot join (rejected)', true);
+            done();
+          }
+        });
+        guestNet.join(wrong);
+      },
+      onFatal: function () {}
+    });
+    hostNet.host();
+
+    /* JOIN_TIMEOUT_MS is 22s, so allow a little more. */
+    var t = setTimeout(function () {
+      if (settled) return;
+      settled = true;
+      check('wrong code cannot join', true, 'never connected (timed out as expected)');
+      done();
+    }, 26000);
+
+    function done() {
+      clearTimeout(t);
+      try { hostNet.close(); } catch (_) {}
+      try { guestNet && guestNet.close(); } catch (_) {}
+      resolve();
+    }
+  });
+}
+
+(async function () {
+  log('--- unit ---');
+  testVarint();
+  testString();
+  log('');
+  log('--- live relay: host + guest ---');
+  await testLiveRoom();
+  log('');
+  log('--- live relay: wrong code ---');
+  await testWrongCode();
+  log('');
+  log(failures === 0 ? 'ALL TESTS PASSED' : failures + ' TEST(S) FAILED', failures === 0 ? 'pass' : 'fail');
+  window.TEST_FAILURES = failures;
+  window.TEST_DONE = true;
+})();
+</script>
+</body>
+</html>

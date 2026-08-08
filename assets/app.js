@@ -40,6 +40,7 @@
   var partnerPeeking = false;
   var lastRound = null;
   var pointerSentAt = 0;
+  var partnerGone = false;   // sticky until the partner is actually back
 
   /* ── Screens ──────────────────────────────────────── */
   function show(name) {
@@ -321,13 +322,18 @@
   function netHandlers(onReady) {
     return {
       onStatus: function (text, kind) {
-        setBadge(kind === "ok" ? "Connected" : (kind === "warn" ? "Trouble" : "Connecting"), kind);
         setStatus(els.lobbyStatus, text, kind);
+        /* Once the partner has dropped, that notice outranks routine relay
+           chatter — otherwise it gets wiped a second later and the screen
+           looks fine while the game is stuck. */
+        if (partnerGone) return;
+        setBadge(kind === "ok" ? "Connected" : (kind === "warn" ? "Trouble" : "Connecting"), kind);
         if (kind === "warn") setStatus(els.netStatus, text, "warn");
         else setStatus(els.netStatus, "", "");
       },
       onReady: onReady,
       onConnected: function () {
+        partnerGone = false;
         setBadge("Connected", "ok");
         setStatus(els.netStatus, "", "");
         if (isHost) {
@@ -339,6 +345,7 @@
       },
       onData: onData,
       onDisconnected: function () {
+        partnerGone = true;
         setBadge("Partner left", "warn");
         setStatus(els.netStatus,
           partnerName() + " disconnected. They can rejoin with the same code.", "warn");
@@ -416,6 +423,7 @@
     view = null;
     lastRound = null;
     isHost = false;
+    partnerGone = false;
     setBadge("Offline", "idle");
     try { history.replaceState(null, "", location.pathname); } catch (_) {}
     show("home");
@@ -423,8 +431,8 @@
 
   /* ── Boot ─────────────────────────────────────────── */
   function init() {
-    if (!window.Peer) {
-      homeError("Couldn't load the networking library. Try a hard refresh.");
+    if (!window.MqttClient || !window.crypto || !window.crypto.subtle) {
+      homeError("This browser can't run the game's secure connection. Try a recent Chrome, Firefox, Safari or Edge.");
       return;
     }
 
@@ -432,9 +440,11 @@
     dial.setCover(false, true);
 
     dial.onInput = function (v) {
-      /* Stream the needle to the psychic, throttled. */
+      /* Stream the needle to the psychic, throttled. Each message fans out to
+         every relay, so keep the rate modest; onCommit sends the exact
+         resting position when the drag ends. */
       var now = Date.now();
-      if (now - pointerSentAt < 45) return;
+      if (now - pointerSentAt < 120) return;
       pointerSentAt = now;
       if (net) net.send({ t: "pointer", v: v });
     };

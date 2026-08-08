@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' wss://0.peerjs.com https://0.peerjs.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' wss://broker.emqx.io:8084 wss://broker.hivemq.com:8884 wss://test.mosquitto.org:8081; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="dark">
 <meta name="description" content="A two-player online version of the party game Wavelength. Read your partner's mind across a spectrum.">
@@ -34,7 +34,7 @@
       <p class="lede">
         One of you sees a hidden target on the spectrum and gives a clue.
         The other moves the dial to where they think it is. Two players, one score,
-        and a direct browser-to-browser connection — no game server in the middle.
+        and an end-to-end encrypted connection that works from any network.
       </p>
 
       <div class="field">
@@ -181,10 +181,10 @@
 </main>
 
 <footer class="foot">
-  <span>Peer-to-peer &amp; encrypted in transit. Nothing you type is stored on a server.</span>
+  <span>End-to-end encrypted with your room code. The relay only ever sees sealed bytes.</span>
 </footer>
 
-<script src="vendor/peerjs.min.js"></script>
+<script src="assets/mqtt.js"></script>
 <script src="assets/spectrums.js"></script>
 <script src="assets/game.js"></script>
 <script src="assets/dial.js"></script>
